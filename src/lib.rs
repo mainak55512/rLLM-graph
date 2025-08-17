@@ -2,13 +2,19 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use reqwest::{
+    Client,
+    header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue},
+};
+use serde_json::{Value, json};
+
 // Type Alias
 pub type SharedState = Arc<Mutex<State>>;
 pub type RLLMError = Box<dyn std::error::Error + Send + Sync>;
 
 // Traits
 pub trait Log {
-    fn log(&self);
+    fn log_llm_response(&self);
 }
 
 #[async_trait]
@@ -48,19 +54,24 @@ pub struct GraphBuilder {
 
 // Behaviours
 impl Log for State {
-    fn log(&self) {
-        println!("{:?}", &self);
+    fn log_llm_response(&self) {
+        if let Some(llm_response) = self.0.get("llm_entry") {
+            println!("{}", llm_response);
+        }
     }
 }
 
 impl State {
-    pub fn insert(&mut self, key: String, value: String) {
-        self.0.insert(key, value);
+    pub fn set_user_entry(&mut self, value: String) {
+        self.0.insert("user_entry".to_string(), value);
+    }
+    pub fn set_llm_entry(&mut self, value: String) {
+        self.0.insert("llm_entry".to_string(), value);
     }
 }
 
 impl Log for StateBuilder {
-    fn log(&self) {
+    fn log_llm_response(&self) {
         match &self.state.lock() {
             Ok(current) => {
                 println!("{:?}", current)
@@ -101,6 +112,35 @@ impl FunctionNode {
 #[async_trait]
 impl Node for LLMNode {
     async fn execute(&self, state: SharedState) -> Result<(), RLLMError> {
+        let client = Client::new();
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&self.api_key)?);
+        let request_body = json!({
+          "model": &self.model,
+          "messages": [{
+              "role": "user",
+              "content": &self.prompt
+          }]
+        });
+        let res = client
+            .post(&self.endpoint)
+            .headers(headers)
+            .body(request_body.to_string())
+            .send()
+            .await?
+            .text()
+            .await?;
+
+        let body: Value = serde_json::from_str(&res)?;
+        let msg = &body["choices"][0]["message"];
+        match state.lock() {
+            Ok(mut context_state) => {
+                context_state.set_llm_entry(msg["content"].to_string());
+                // context_state.log();
+            }
+            Err(_) => println!("Couldn't aquire lock!"),
+        }
         Ok(())
     }
 }
@@ -192,53 +232,41 @@ impl GraphBuilder {
 }
 
 /*
-use rllm::{FunctionNode, GraphBuilder, Log, RLLMError, SharedState};
+use dotenv::dotenv;
+use rllm::{FunctionNode, GraphBuilder, LLMNode, Log, RLLMError, SharedState};
+use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), RLLMError> {
-    let new_func = FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
+    dotenv().ok();
+    let endpoint = env::var("END_POINT")?;
+    let api_key = "Bearer ".to_string() + &env::var("API_KEY")?;
+
+    // Creating LLMNode
+    let mut llm_node = LLMNode::new(endpoint, api_key);
+    llm_node.set_model("llama-3.3-70b-versatile".to_string());
+    llm_node.set_prompt("What's the capital of Hungery?".to_string());
+
+    // Creating FunctionNode
+    let log_fn = FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
         match state.lock() {
-            Ok(mut context_state) => {
-                context_state.insert("ABC".to_string(), "UVW".to_string());
-                context_state.log();
+            Ok(context_state) => {
+                context_state.log_llm_response();
             }
             Err(_) => println!("Couldn't aquire lock!"),
         }
 
         Ok(())
     }));
-    let new_func_1 = FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
-        match state.lock() {
-            Ok(mut context_state) => {
-                context_state.insert("DEF".to_string(), "XYZ".to_string());
-                context_state.log();
-            }
-            Err(_) => println!("Couldn't acquire lock!"),
-        }
 
-        Ok(())
-    }));
-
-    let new_func_2 = FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
-        match state.lock() {
-            Ok(mut context_state) => {
-                context_state.insert("PQR".to_string(), "EFG".to_string());
-                context_state.log();
-            }
-            Err(_) => println!("Couldn't acquire lock!"),
-        }
-
-        Ok(())
-    }));
+    // Building Graph
     let mut g_build = GraphBuilder::new();
-    g_build.add_node("A".to_string(), Box::new(new_func));
-    g_build.add_node("B".to_string(), Box::new(new_func_1));
-    g_build.add_node("C".to_string(), Box::new(new_func_2));
-
+    g_build.add_node("A".to_string(), Box::new(llm_node));
+    g_build.add_node("B".to_string(), Box::new(log_fn));
     g_build.add_edge(("A".to_string(), "B".to_string()));
-    g_build.add_edge(("A".to_string(), "C".to_string()));
-
     let graph = g_build.build();
+
+    // Running the graph
     graph.run().await?;
 
     Ok(())
