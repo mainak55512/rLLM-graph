@@ -1,5 +1,5 @@
 [package]
-name = "rllm-graph"
+name = "rllm"
 version = "0.1.0"
 edition = "2024"
 
