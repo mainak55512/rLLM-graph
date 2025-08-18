@@ -1,3 +1,4 @@
+![Alt text](./assets/rLLM-logo.png)
 # rLLM-graph — Graph-based Rust LLM Orchestration
 
 RLLM is a **Rust library for building and executing computation graphs** that combine **function nodes** (custom Rust logic) with **LLM nodes** (language model calls).
