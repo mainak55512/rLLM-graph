@@ -1,4 +1,4 @@
-![Alt text](./assets/rLLM-logo_1.png)
+![Alt text](./assets/rLLM-logo.png)
 # rLLM-graph — Graph-based Rust LLM Orchestration
 
 RLLM is a **Rust library for building and executing computation graphs** that combine **function nodes** (custom Rust logic) with **LLM nodes** (language model calls).
@@ -93,7 +93,7 @@ Provides typed getters and setters:
 
 * `set_rllm_string`, `set_rllm_number`, `set_rllm_bool`, `set_rllm_json`
 * `get_rllm_string`, `get_rllm_number`, `get_rllm_bool`, `get_rllm_json`
-* `get_llm_response`
+* `get_llm_response`, `set_llm_response`
 
 ---
 
