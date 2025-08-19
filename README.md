@@ -36,7 +36,8 @@ Here’s a minimal example that sets a state variable, queries an LLM, and logs 
 
 ```rust
 use dotenv::dotenv;
-use rllm::{FunctionNode, GraphBuilder, LLMNode, RLLMError, SharedState};
+use rllm::{FunctionNode, GraphBuilder, LLMNode, RLLMError, SharedState, Tool, ToolRegistry};
+use serde_json::{Value, json};
 use std::env;
 
 #[tokio::main]
@@ -44,6 +45,57 @@ async fn main() -> Result<(), RLLMError> {
     dotenv().ok();
     let endpoint = env::var("END_POINT")?;
     let api_key = "Bearer ".to_string() + &env::var("API_KEY")?;
+
+    // Initializing Tool Registry
+    let mut tool_registry = ToolRegistry::new();
+
+    // Defining tool function
+    let fetch_weather =
+        FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
+            match state.lock() {
+                Ok(mut context_state) => {
+                    let llm_response = context_state.get_llm_response_json()?;
+                    if let Some(fn_args) = llm_response
+                        .pointer("/function/arguments")
+                        .and_then(|v| v.as_str())
+                    {
+                        let arg: Value = serde_json::from_str(fn_args)?;
+                        if let Some(location) = arg["location"].as_str() {
+                            context_state.set_rllm_string(
+                                "tool_response",
+                                format!("The Weather today in {} is sunny, 34*C", location),
+                            )?;
+                        }
+                    }
+                    return Ok(());
+                }
+                Err(_) => println!("Couldn't aquire lock!"),
+            }
+            Ok(())
+        }));
+
+    // Initializing Tool with the tool function
+    let weather_tool =
+        Tool::new("fetch_weather".to_string(), fetch_weather).add_tool_details(json!({
+          "type": "function",
+          "function": {
+            "name": "fetch_weather",
+            "description": "Get the current weather for a location",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "The city and state, e.g. San Francisco, CA"
+                }
+              },
+              "required": ["location"]
+            }
+          }
+        }));
+
+    // Registering the tool in Tool registry
+    tool_registry.register(weather_tool);
 
     // Creating a FunctionNode to set "location"
     let set_location_node =
@@ -61,15 +113,16 @@ async fn main() -> Result<(), RLLMError> {
     let mut llm_node = LLMNode::new(endpoint, api_key);
     llm_node.set_model("llama-3.3-70b-versatile".to_string());
     llm_node.set_prompt(
-        "What's the capital of {}?".to_string(),
+        "how's the weather in {}".to_string(),
         vec!["location".to_string()],
     );
+    llm_node.set_tools(tool_registry.get_tool_list(), tool_registry.get_tools());
 
     // Creating FunctionNode to print the LLM Output
     let log_fn = FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
         match state.lock() {
             Ok(context_state) => {
-                println!("{}", context_state.get_llm_response()?);
+                println!("{}", context_state.get_rllm_string("tool_response")?);
             }
             Err(_) => println!("Couldn't aquire lock!"),
         }

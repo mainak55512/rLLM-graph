@@ -37,6 +37,8 @@ pub struct LLMNode {
     endpoint: String,
     model: String,
     api_key: String,
+    tools: HashMap<String, Tool>,
+    tool_list: Vec<Value>,
 }
 
 pub struct Graph<'a> {
@@ -48,6 +50,17 @@ pub struct Graph<'a> {
 pub struct GraphBuilder {
     nodes: HashMap<String, Box<dyn Node>>,
     edges: Vec<(String, String)>,
+}
+
+pub struct Tool {
+    name: String,
+    tool_fn: FunctionNode,
+    tool_details: Value,
+}
+
+pub struct ToolRegistry {
+    tool_map: HashMap<String, Tool>,
+    tools: Vec<Value>,
 }
 
 // Behaviours
@@ -123,6 +136,10 @@ impl State {
         self.get_rllm_string("rllm_response")
     }
 
+    pub fn get_llm_response_json(&self) -> Result<Value, String> {
+        self.get_rllm_json("rllm_response")
+    }
+
     pub fn set_rllm_number(&mut self, var_name: &str, value: i64) -> Result<(), String> {
         if Self::check_valid_key(var_name) {
             self.0
@@ -159,6 +176,9 @@ impl State {
     fn set_llm_response(&mut self, value: String) {
         self.0
             .insert("rllm_response".to_string(), Value::String(value));
+    }
+    fn set_llm_response_json(&mut self, value: Value) {
+        self.0.insert("rllm_response".to_string(), value);
     }
 }
 
@@ -213,7 +233,8 @@ impl Node for LLMNode {
           "messages": [{
               "role": "user",
               "content": prompt.as_str()
-          }]
+          }],
+            "tools": self.tool_list
         });
 
         let res = client
@@ -227,11 +248,30 @@ impl Node for LLMNode {
 
         let body: Value = serde_json::from_str(&res)?;
         let msg = &body["choices"][0]["message"];
-        match state.lock() {
-            Ok(mut context_state) => {
-                context_state.set_llm_response(msg["content"].to_string());
+        if let Some(tools_call) = msg.get("tool_calls") {
+            if let Some(tool_array) = tools_call.as_array() {
+                for tool in tool_array {
+                    match state.lock() {
+                        Ok(mut context_state) => {
+                            context_state.set_llm_response_json(tool.clone());
+                        }
+                        Err(_) => println!("Couldn't aquire lock!"),
+                    }
+                    if let Some(tool_name) = tool.pointer("/function/name").and_then(|v| v.as_str())
+                    {
+                        if let Some(tool_func) = self.tools.get(tool_name) {
+                            tool_func.tool_fn.execute(Arc::clone(&state)).await?;
+                        }
+                    }
+                }
             }
-            Err(_) => println!("Couldn't aquire lock!"),
+        } else {
+            match state.lock() {
+                Ok(mut context_state) => {
+                    context_state.set_llm_response(msg["content"].to_string());
+                }
+                Err(_) => println!("Couldn't aquire lock!"),
+            }
         }
         Ok(())
     }
@@ -244,6 +284,8 @@ impl LLMNode {
             model: String::default(),
             api_key: api_key,
             endpoint: endpoint,
+            tools: HashMap::new(),
+            tool_list: Vec::new(),
         }
     }
 
@@ -254,6 +296,11 @@ impl LLMNode {
 
     pub fn set_model(&mut self, model: String) {
         self.model = model;
+    }
+
+    pub fn set_tools(&mut self, tool_list: Vec<Value>, tools: HashMap<String, Tool>) {
+        self.tools = tools;
+        self.tool_list = tool_list;
     }
 }
 
@@ -322,5 +369,42 @@ impl GraphBuilder {
             start_edges: start_edges,
             adjacent_edge_map: adjacent_edge_map,
         }
+    }
+}
+
+impl Tool {
+    pub fn new(tool_name: String, tool_fn: FunctionNode) -> Self {
+        Self {
+            name: tool_name,
+            tool_fn: tool_fn,
+            tool_details: Value::Null,
+        }
+    }
+
+    pub fn add_tool_details(mut self, tool_details: Value) -> Self {
+        self.tool_details = tool_details;
+        self
+    }
+}
+
+impl ToolRegistry {
+    pub fn new() -> Self {
+        Self {
+            tool_map: HashMap::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, tool: Tool) {
+        self.tools.push(tool.tool_details.clone());
+        self.tool_map.insert(tool.name.clone(), tool);
+    }
+
+    pub fn get_tools(self) -> HashMap<String, Tool> {
+        self.tool_map
+    }
+
+    pub fn get_tool_list(&self) -> Vec<Value> {
+        self.tools.clone()
     }
 }
