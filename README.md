@@ -45,14 +45,19 @@ async fn main() -> Result<(), RLLMError> {
     let endpoint = env::var("END_POINT")?;
     let api_key = "Bearer ".to_string() + &env::var("API_KEY")?;
 
-    // FunctionNode: set "location"
+    // Creating a FunctionNode to set "location"
     let set_location_node =
         FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
-            state.lock()?.set_rllm_string("location", "America".to_string())?;
+            match state.lock() {
+                Ok(mut context_state) => {
+                    context_state.set_rllm_string("location", "America".to_string())?;
+                }
+                Err(_) => println!("Couldn't aquire lock!"),
+            }
             Ok(())
         }));
 
-    // LLMNode: ask about location
+    // Creating LLMNode
     let mut llm_node = LLMNode::new(endpoint, api_key);
     llm_node.set_model("llama-3.3-70b-versatile".to_string());
     llm_node.set_prompt(
@@ -60,13 +65,18 @@ async fn main() -> Result<(), RLLMError> {
         vec!["location".to_string()],
     );
 
-    // FunctionNode: log the LLM output
+    // Creating FunctionNode to print the LLM Output
     let log_fn = FunctionNode::new(Box::new(|state: SharedState| -> Result<(), RLLMError> {
-        println!("{}", state.lock()?.get_llm_response()?);
+        match state.lock() {
+            Ok(context_state) => {
+                println!("{}", context_state.get_llm_response()?);
+            }
+            Err(_) => println!("Couldn't aquire lock!"),
+        }
         Ok(())
     }));
 
-    // Build Graph
+    // Building Graph
     let mut g_build = GraphBuilder::new();
     g_build.add_node("A".to_string(), Box::new(set_location_node));
     g_build.add_node("B".to_string(), Box::new(llm_node));
@@ -75,7 +85,7 @@ async fn main() -> Result<(), RLLMError> {
     g_build.add_edge(("B".to_string(), "C".to_string()));
     let graph = g_build.build();
 
-    // Run
+    // Running the graph
     graph.run().await?;
 
     Ok(())
